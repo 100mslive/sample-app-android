@@ -21,6 +21,7 @@ import live.hms.video.sdk.models.*
 import live.hms.video.sdk.models.enums.HMSPeerUpdate
 import live.hms.video.sdk.models.enums.HMSRoomUpdate
 import live.hms.video.sdk.models.enums.HMSTrackUpdate
+import live.hms.video.sdk.models.role.HMSRole
 import live.hms.video.utils.HMSCoroutineScope
 import java.util.*
 import kotlin.collections.ArrayList
@@ -33,6 +34,7 @@ class MeetingViewModel(
     private const val TAG = "MeetingViewModel"
   }
 
+  private var pendingRoleChange: HMSRoleChangeRequest? = null
   private val config = HMSConfig(
     roomDetails.username,
     roomDetails.authToken,
@@ -232,17 +234,17 @@ class MeetingViewModel(
 
         override fun onJoin(room: HMSRoom) {
           failures.clear()
-          val peer = hmsSDK.getLocalPeer()
-          peer?.audioTrack?.apply {
+/*          val hmsLocalPeer = hmsSDK.getLocalPeer()
+          hmsLocalPeer?.audioTrack?.apply {
             localAudioTrack = this
             isLocalAudioEnabled.postValue(!isMute)
-            addTrack(this, peer)
+            addTrack(this, hmsLocalPeer)
           }
-          peer?.videoTrack?.apply {
+          hmsLocalPeer?.videoTrack?.apply {
             localVideoTrack = this
             isLocalVideoEnabled.postValue(!isMute)
-            addTrack(this, peer)
-          }
+            addTrack(this, hmsLocalPeer)
+          }*/
 
           state.postValue(MeetingState.Ongoing())
         }
@@ -261,7 +263,7 @@ class MeetingViewModel(
               synchronized(_tracks) {
                 val track = _tracks.find {
                   it.peer.peerID == peer.peerID &&
-                      it.video?.trackId == peer.videoTrack?.trackId
+                          it.video?.trackId == peer.videoTrack?.trackId
                 }
                 if (track != null) dominantSpeaker.postValue(track)
               }
@@ -282,7 +284,21 @@ class MeetingViewModel(
         override fun onTrackUpdate(type: HMSTrackUpdate, track: HMSTrack, peer: HMSPeer) {
           Log.d(TAG, "join:onTrackUpdate type=$type, track=$track, peer=$peer")
           when (type) {
-            HMSTrackUpdate.TRACK_ADDED -> addTrack(track, peer)
+            HMSTrackUpdate.TRACK_ADDED -> {
+              if (peer is HMSLocalPeer) {
+                when (track.type) {
+                  HMSTrackType.AUDIO -> {
+                    localAudioTrack = track as HMSLocalAudioTrack
+                    isLocalAudioEnabled.postValue(!track.isMute)
+                  }
+                  HMSTrackType.VIDEO -> {
+                    localVideoTrack = track as HMSLocalVideoTrack
+                    isLocalVideoEnabled.postValue(!track.isMute)
+                  }
+                }
+              }
+              addTrack(track, peer)
+            }
             HMSTrackUpdate.TRACK_REMOVED -> {
               if (track.type == HMSTrackType.VIDEO) removeTrack(track as HMSVideoTrack, peer)
             }
@@ -312,6 +328,12 @@ class MeetingViewModel(
         override fun onReconnecting(error: HMSException) {
           state.postValue(MeetingState.Reconnecting("Reconnecting", error.toString()))
         }
+
+        override fun onRoleChangeRequest(request: HMSRoleChangeRequest) {
+          pendingRoleChange = request
+          state.postValue(MeetingState.RoleChangeRequest(request))
+
+        }
       })
 
       hmsSDK.addAudioObserver(object : HMSAudioListener {
@@ -321,6 +343,10 @@ class MeetingViewModel(
         }
       })
     }
+  }
+
+  fun changeRoleAccept(hmsRoleChangeRequest: HMSRoleChangeRequest) {
+    hmsSDK.acceptChangeRole(hmsRoleChangeRequest)
   }
 
 
@@ -404,7 +430,7 @@ class MeetingViewModel(
     synchronized(_tracks) {
       val trackToRemove = _tracks.find {
         it.peer.peerID == peer.peerID &&
-            it.video?.trackId == track.trackId
+                it.video?.trackId == track.trackId
       }
       _tracks.remove(trackToRemove)
 
@@ -412,5 +438,14 @@ class MeetingViewModel(
       tracks.postValue(_tracks)
     }
   }
+
+  fun getAvailableRoles(): List<HMSRole> = hmsSDK.getRoles()
+
+  fun changeRole(remotePeer: HMSRemotePeer, toRole: HMSRole) =
+    hmsSDK.changeRole(remotePeer, toRole, false)
+
+  fun acceptNewRole(request: HMSRoleChangeRequest) = hmsSDK.acceptChangeRole(request)
+
+
 }
 
